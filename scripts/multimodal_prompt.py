@@ -95,24 +95,31 @@ def get_supplement_prompts(mask_vis_path: str, existing_prompts: list = None) ->
         print(f"图片处理失败: {e}")
         return []
 
-    # 2. 构建提示词
+    # 2. 构建提示词 (Optimized from icon/vlm_client.py)
     prompt = f"""
-請严格按照以下要求分析这张掩码可视化图：
-1.  图中是一个流程图/架构图的元素分割掩码，彩色区域是已识别的元素，白色区域是未识别的非空白区域。
-2.  请找出白色未识别区域对应的标准流程图形状名称。
-3.  仅提供能让SAM3模型识别的英文提示词，优先使用以下标准DrawIO名称：
-    - diamond (菱形/判断框)
-    - cylinder (圆柱/数据库)
-    - cloud (云)
-    - actor (小人/角色)
-    - ellipse (椭圆/圆形)
-    - hexagon (六边形)
-    - triangle (三角形)
-    - parallelogram (平行四边形)
-4.  也可以返回其他通用简单的英文名词（如 keyboard, monitor, server 等）。{existing_str}
-5.  若所有非空白区域都已被识别，直接返回空JSON数组。
-6.  输出要求：仅返回纯JSON数组字符串，无任何Markdown标记。
-7.  示例输出：["diamond", "cloud", "cylinder"]
+You are an expert in analyzing flowchart and diagram masks.
+INPUT: An image of a flowchart/diagram.
+- Masked areas (colored/dark): ALREADY IDENTIFIED elements.{existing_str}
+- Blank areas (white/bright): UNIDENTIFIED elements.
+
+TASK: Scan the BLANK areas (unidentified) and list the names of missed elements.
+
+CATEGORY DISTINCTION:
+- icon_prompts: for SIMPLE graphics, shapes, flat icons (e.g., diamond, cylinder, cloud, user, server).
+- picture_prompts: for COMPLEX images, screenshots, logos (e.g., photo, logo, complex diagram).
+
+RULES:
+- Provide EXACTLY ONE WORD (single noun) or specific DrawIO shape names.
+- Prefer standard DrawIO shapes: diamond, cylinder, cloud, actor, hexagon, triangle, parallelogram.
+- Avoid abstract words like "image", "shape", "thing". Use concrete names like "server", "database", "user".
+- DO NOT include: arrow, line, connector, text, label.
+- If nothing is missed, return empty lists.
+
+Output JSON Format:
+{{
+  "icon_prompts": ["word1", "word2"],
+  "picture_prompts": ["word1", "word2"]
+}}
     """.strip()
 
     try:
@@ -171,19 +178,50 @@ def get_supplement_prompts(mask_vis_path: str, existing_prompts: list = None) ->
         
         # 尝试解析JSON
         try:
-            # 清理Markdown代码块标记
             cleaned_content = content.replace("```json", "").replace("```", "").strip()
-            # 找到第一个[和最后一个]
-            start_idx = cleaned_content.find('[')
-            end_idx = cleaned_content.rfind(']')
-            if start_idx != -1 and end_idx != -1:
-                json_str = cleaned_content[start_idx:end_idx+1]
-                prompts = json.loads(json_str)
-                if isinstance(prompts, list):
-                    # 过滤空字符串
-                    return [p for p in prompts if isinstance(p, str) and p.strip()]
             
-            print(f"警告：无法解析JSON数组，原始内容：{content}")
+            # 1. 尝试解析对象格式 {"icon_prompts": [], ...}
+            start_obj = cleaned_content.find('{')
+            end_obj = cleaned_content.rfind('}')
+            
+            prompts_list = []
+            
+            if start_obj != -1 and end_obj != -1:
+                try:
+                    json_str = cleaned_content[start_obj:end_obj+1]
+                    data = json.loads(json_str)
+                    if isinstance(data, dict):
+                        prompts_list.extend(data.get("icon_prompts", []))
+                        prompts_list.extend(data.get("picture_prompts", []))
+                        # 兼容直接返回 dict 但 key 不一样的情况 (rare fallback)
+                        if not prompts_list and "prompts" in data:
+                            prompts_list.extend(data["prompts"])
+                except:
+                    pass # Continue to try array parsing
+
+            # 2. 尝试解析纯列表格式 ["a", "b"] (兼容旧模型输出)
+            if not prompts_list:
+                start_arr = cleaned_content.find('[')
+                end_arr = cleaned_content.rfind(']')
+                if start_arr != -1 and end_arr != -1:
+                    try:
+                        json_str = cleaned_content[start_arr:end_arr+1]
+                        data = json.loads(json_str)
+                        if isinstance(data, list):
+                            prompts_list = data
+                    except:
+                        pass
+            
+            # 3. 最终清理与过滤
+            if prompts_list:
+                # 过滤非字符串、空串、去重
+                final_list = list(set([str(p).strip().lower() for p in prompts_list if p and isinstance(p, (str, int))]))
+                # 再次过滤黑名单 (箭头/连线/文字)
+                blacklist = {"arrow", "line", "connector", "text", "label", "word", "link"}
+                final_list = [p for p in final_list if p not in blacklist]
+                return final_list
+            
+            print(f"警告：无法解析有效JSON，原始内容：{content}")
             return []
             
         except json.JSONDecodeError:
