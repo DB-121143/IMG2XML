@@ -13,6 +13,7 @@ OCR 矢量还原系统 - 主入口
 
 import argparse
 import sys
+import os
 import io
 import base64
 from pathlib import Path
@@ -43,12 +44,25 @@ class OCRVectorRestorer:
         Args:
             use_mistral: 是否使用 Mistral OCR 进行校对
         """
-        self.use_mistral = use_mistral
+        self.use_vlm_only = os.environ.get("USE_VLM_OCR", "false").lower() == "true"
+        # In VLM-only mode, disable separate refinement step
+        self.use_mistral = use_mistral if not self.use_vlm_only else False
+        
         self.azure_ocr = None
         self.mistral_ocr = None
         
     def _init_ocr_clients(self):
         """延迟初始化 OCR 客户端"""
+        if self.use_vlm_only:
+            if self.mistral_ocr is None:
+                try:
+                    print("🔧 Mode: VLM-Only (Bypassing Azure)")
+                    self.mistral_ocr = MistralOCR()
+                except Exception as e:
+                    print(f"警告: 无法初始化 VLM OCR: {e}")
+                    raise
+            return
+
         if self.azure_ocr is None:
             try:
                 self.azure_ocr = AzureOCR()
@@ -101,9 +115,18 @@ class OCRVectorRestorer:
         print("\n🔧 初始化 OCR 服务...")
         self._init_ocr_clients()
         
-        # 步骤 1: Azure OCR
-        print("\n📖 步骤 1/5: 使用 Azure OCR 识别文字...")
-        azure_result = self.azure_ocr.analyze_image(str(image_path))
+        # 步骤 1: Azure OCR 或 VLM End-to-End
+        if self.use_vlm_only:
+            print("\n📖 步骤 1/5: 使用 VLM (End-to-End) 识别文字...")
+            try:
+                azure_result = self.mistral_ocr.analyze_image_end_to_end(str(image_path))
+            except AttributeError:
+                # Fallback if method missing (shouldn't happen with my edits)
+                raise RuntimeError("MistralOCR missing analyze_image_end_to_end method")
+        else:
+            print("\n📖 步骤 1/5: 使用 Azure OCR 识别文字...")
+            azure_result = self.azure_ocr.analyze_image(str(image_path))
+            
         print(f"   识别到 {len(azure_result.text_blocks)} 个文字块")
         
         # 步骤 2: Mistral OCR (Crop Strategy - 升级版)
@@ -138,7 +161,8 @@ class OCRVectorRestorer:
                     b64 = base64.b64encode(buf.getvalue()).decode()
                     
                     cid = str(i)
-                    crop_data.append((cid, b64))
+                    # Pass hint text to help VLM focus
+                    crop_data.append((cid, b64, block.text))
                     block_map[cid] = block
 
                 # 批量识别

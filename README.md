@@ -1,64 +1,31 @@
 # Image to DrawIO (XML) Converter
 
-This project implements a sophisticated pipeline to convert images (like flowcharts, diagrams, and technical drawings) into editable DrawIO (mxGraph) XML files. It leverages advanced Computer Vision models and Large Language Models to achieve high-fidelity reconstruction.
+This project implements a sophisticated pipeline to convert images (like flowcharts, diagrams, and technical drawings) into editable DrawIO (mxGraph) XML files. It leverages advanced Computer Vision models (**SAM 3**) and Large Language Models (**Qwen/Mistral**) to achieve high-fidelity reconstruction.
 
 ## Key Features
 
 *   **Advanced Segmentation**: Uses **SAM 3 (Segment Anything Model 3)** for state-of-the-art segmentation of diagram elements (shapes, arrows, icons).
-*   **Fixed 4-Round VLM Scanning**: A structured, iterative extraction process guided by **Multimodal LLMs (Qwen-VL/GPT-4V)** ensuring no element is left behind:
+*   **Iterative VLM Scanning**: A structured, iterative extraction process guided by **Multimodal LLMs** ensuring no element is left behind:
     1.  **Initial Generic Extraction**: Captures standard shapes and icons.
-    2.  **Single Word Scan**: VLM scans blank areas for single objects.
-    3.  **Two-Word Scan**: Refines extraction for specific attributes.
-    4.  **Phrase Scan**: Captures complex descriptions or grouped objects.
-*   **High-Quality OCR**:
-    *   **Azure Document Intelligence** for precise text localization.
-    *   **Mistral Vision/MLLM** for correcting text and converting mathematical formulas to **LaTeX** ($\int f(x) dx$).
-    *   **Crop-Guided Strategy**: Extracts text/formula regions and sends high-res crops to LLMs for pixel-perfect recognition.
-*   **Smart Background Removal**: Integrated **RMBG-2.0** model to automatically remove backgrounds from icons, pictures, and arrows, ensuring they layer correctly in DrawIO.
-*   **Arrow Handling**: Arrows are extracted as transparent images (rather than complex vector paths) to guarantee visual fidelity, handling dashed lines, curves, and complex routing without error.
-*   **Vector Shape Recovery**: Standard shapes are converted to native DrawIO vector shapes with accurate fill and stroke colors.
-    *   **Supported Shapes**: Rectangle, Rounded Rectangle, Diamond (Decision), Ellipse (Start/End), Cylinder (Database), Cloud, Hexagon, Triangle, Parallelogram, Actor, Title Bar, Text Bubble, Section Panel.
-*   **Multi-User Concurrency**: Built-in support for concurrent user sessions using a **Global Lock** mechanism for thread-safe GPU access and an **LRU Cache** (Least Recently Used) to persist image embeddings across requests, ensuring high performance and stability.
-*   **Web Interface**: A React-based frontend + FastAPI backend for easy uploading and editing.
+    2.  **Refinement Rounds**: VLM scans blank areas to suggest new prompts for missed objects.
+*   **High-Quality OCR (Hybrid Mode)**:
+    *   **Azure Document Intelligence** for precise text localization (Bounding Boxes).
+    *   **VLM (Mistral/Qwen)** for recognition correction and **LaTeX** formula conversion.
+    *   **Hint Mechanism**: Uses Azure detected text as "hints" to constrain VLM generation, eliminating hallucinations and duplicate text.
+    *   **Rate Limit Handling**: Smart batching (5 crops/req) with exponential backoff to handle API limits.
+*   **Smart Background Removal**: Integrated **RMBG-2.0** model to automatically remove backgrounds from icons, pictures, and arrows.
+*   **Arrow Handling**: Arrows are extracted as transparent images with smart masking to preserve complex routing/dashing fidelity.
+*   **Vector Shape Recovery**: 
+    *   **Supported Shapes**: Rectangle, Rounded Rectangle, Diamond (Decision), Ellipse (Start/End), Cylinder (Database), Cloud, Hexagon, Triangle, Parallelogram, Actor, Title Bar, Section Panel.
+    *   **Color Extraction**: Intelligent "Fill vs Stroke" color extraction using statistical analysis of ROIs.
+*   **Multi-User Concurrency**: 
+    *   **Global Lock**: Ensures thread-safe access to GPU-heavy models.
+    *   **LRU Cache**: Persists SAM3 image embeddings to allow fast interactive editing without re-encoding.
 
-## Architecture Pipeline
+## Documentation
 
-1.  **Input**: Image (PNG/JPG).
-2.  **Segmentation (SAM3)**:
-    *   Initial pass with standard prompts (rectangle, arrow, icon).
-    *   Iterative loop: Analyze unrecognized regions -> Ask MLLM for visual prompts -> Re-run SAM3 mask decoder.
-3.  **Element Processing**:
-    *   **Vector Shapes**: Color extraction (Fill/Stroke) + Geometry mapping.
-    *   **Image Elements (Icons/Arrows)**: Crop -> Padding -> Mask Filtering -> RMBG-2.0 Background Removal -> Base64 Encoding.
-4.  **Text Extraction (Parallel)**:
-    *   Azure OCR detects text bounding boxes.
-    *   High-res crops of text regions are sent to Mistral/LLM.
-    *   Latex conversion for formulas.
-5.  **XML Generation**:
-    *   Merges spatial data from SAM3 and Text OCR.
-    *   Applies Z-Index sorting (Layers).
-    *   Generates `.drawio.xml` file.
-
-## Project Structure
-
-```
-sam3_workflow/
-├── config/                 # Configuration files
-├── flowchart_text/         # OCR & Text Extraction Module
-│   ├── src/                # OCR Source Code (Azure, Mistral, Alignment)
-│   └── main.py             # OCR Entry point
-├── frontend/               # React Web Application
-├── inputs/                 # Input images directory
-├── models/                 # Model weights (RMBG, etc.)
-├── output/                 # Results directory
-├── sam3/                   # SAM3 Model Library
-├── scripts/                # Core Processing Scripts
-│   ├── sam3_extractor.py   # Segmentation & Image Extraction Logic
-│   ├── merge_xml.py        # XML Merging & Orchestration
-│   └── run_all.py          # CLI Entry point
-├── server.py               # FastAPI Backend Server
-└── requirements.txt        # Python dependencies
-```
+*   [**Technical Report**](TECHNICAL_REPORT.md): Detailed explanation of architecture, algorithms, and optimization strategies.
+*   [**API Documentation**](docs/api.md) (Internal): Server API endpoints.
 
 ## Installation
 
@@ -75,63 +42,36 @@ sam3_workflow/
     ```
 
 2.  **Model Setup**:
-    Ensure the following models are placed in the `models/` directory:
-    *   `models/rmbg/model.onnx` (RMBG-2.0)
-    *   SAM3 checkpoints (configured in `config/config.yaml`)
-
-### Detailed Model Setup
-
-Since model weights are large, they are not included in the git repository. Please download them manually:
-
-1.  **RMBG-2.0 (Background Removal)**
-    *   Download `model.onnx` from [HuggingFace - BRIA RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0).
-    *   Place it at: `models/rmbg/model.onnx`.
-
-2.  **SAM 3 (Segment Anything Model 3)**
-    *   Download the SAM3 checkpoint (e.g., `sam3.pt`).
-    *   Update the `checkpoint_path` in `config/config.yaml` to point to your downloaded file.
-    *   Ensure `bpe_simple_vocab_16e6.txt.gz` is present in `sam3/assets/`.
+    *   **RMBG-2.0**: Download `model.onnx` from [HuggingFace](https://huggingface.co/briaai/RMBG-2.0) and place in `models/rmbg/`.
+    *   **SAM 3**: Update `config/config.yaml` with the path to your SAM3 checkpoint.
 
 3.  **Environment Configuration**:
-    Create `.env` files in `flowchart_text/.env` and root if necessary.
+    Configure `flowchart_text/.env`:
     ```env
-    AZURE_ENDPOINT=your_azure_endpoint
-    AZURE_API_KEY=your_azure_key
-    MISTRAL_API_KEY=your_mistral_key
+    # Azure Configuration (Detection)
+    AZURE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+    AZURE_API_KEY=your_key
+
+    # VLM Configuration (Recognition)
+    MISTRAL_API_KEY=your_key (or compatible OpenAI key)
+    MISTRAL_MODEL=qwen-vl-max (or similar)
+    MISTRAL_ENDPOINT=https://dashscope.aliyuncs.com/compatible-mode/v1
     ```
 
 ## Usage
 
-### 1. Web Interface (Recommended)
+### Web Interface (Recommended)
+1.  Start the backend:
+    ```bash
+    python server.py
+    ```
+2.  Start the frontend:
+    ```bash
+    cd frontend && npm run dev
+    ```
+3.  Open browser and upload images.
 
-Start the Backend:
+### Command Line
 ```bash
-python server.py
-# Server runs at http://localhost:8000
+python scripts/run_all.py input/test.jpg
 ```
-
-Start the Frontend:
-```bash
-cd frontend
-npm install
-npm run dev
-# Frontend runs at http://localhost:5173
-```
-Open your browser, upload an image, and view the result in the embedded DrawIO editor.
-
-### 2. Command Line Interface (CLI)
-
-To process a single image:
-
-```bash
-python scripts/run_all.py --image input/test_diagram.png
-```
-The output XML will be saved in the `output/` directory.
-
-## Configuration `config.yaml`
-
-Customize the pipeline behavior in `config/config.yaml`:
-*   **sam3**: Adjust score thresholds, NMS (Non-Maximum Suppression) thresholds, max iteration loops.
-*   **paths**: Set input/output directories.
-*   **dominant_color**: Fine-tune color extraction sensitivity.
-

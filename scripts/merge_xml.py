@@ -72,9 +72,15 @@ def run_text_extraction(image_path: str) -> str:
         # 设置工作目录为 flowchart_text 所在目录，避免import错误
         cwd = os.path.dirname(script_path)
         
+        # 传递 VLM OCR 配置
+        env = os.environ.copy()
+        if CONFIG.get("multimodal", {}).get("force_vlm_ocr", False):
+            env["USE_VLM_OCR"] = "true"
+        
         subprocess.run(
             [sys.executable, os.path.basename(script_path), abs_image_path, abs_output_path],
             cwd=cwd,
+            env=env,
             check=True
         )
         

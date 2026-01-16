@@ -7,12 +7,21 @@ Mistral OCR 模块
 import base64
 import re
 import io
+import time
 import tempfile
+import json
 from pathlib import Path
 from dataclasses import dataclass
 from PIL import Image
 
 from mistralai import Mistral
+
+# Import types for compatibility
+try:
+    from src.ocr_azure import OCRResult, TextBlock
+except ImportError:
+    pass # Will handle inside method if needed or fail later
+
 
 import sys
 # Add project root to path to import scripts
@@ -196,16 +205,19 @@ class MistralOCR:
             print(f"Local inference failed: {e}")
             return MistralOCRResult(raw_text="", latex_blocks=[], markdown_content="")
 
-    def recognize_crops(self, crops: list[tuple[str, str]]) -> list[dict]:
+    def recognize_crops(self, crops: list) -> list[dict]:
         """
         批量识别裁剪后的图片片段 (Crop API)
-        
+        Supports both Mistral SDK and Generic OpenAI-compatible API
         Args:
-            crops: 图片列表，每项为 (image_id, base64_str)
-            
-        Returns:
-            list[dict]: 识别结果列表 [{"id": id, "text": "...", "is_formula": bool}]
+            crops: List of (id, base64) OR (id, base64, hint_text)
         """
+        # Determine mode from self.mode (initialized in __init__)
+        # If 'local' OR if we are in 'api' mode but using the generic multimodal config (Qwen/Dashscope)
+        if self.mode == "local" or (self.mode == "api" and MULTIMODAL_CONFIG):
+             return self._recognize_crops_generic(crops)
+             
+        # Only fallback to Mistral SDK if strict Mistral API usage is intended (no MULTIMODAL_CONFIG)
         if self.mode == "local":
             return self._recognize_crops_local(crops)
             
@@ -284,6 +296,101 @@ class MistralOCR:
                     
         return results
     
+    def _recognize_crops_generic(self, crops: list) -> list[dict]:
+        """ Generic/Local VLM Batch Recognition (Batched for Efficiency) """
+        results = []
+        BATCH_SIZE = 5
+        
+        # Load Config
+        if self.mode == "api":
+            base_url = MULTIMODAL_CONFIG.get("base_url")
+            api_key = MULTIMODAL_CONFIG.get("api_key")
+            model_name = MULTIMODAL_CONFIG.get("model")
+            print(f"   Using Generic API: {model_name} (Batch Size: {BATCH_SIZE})")
+            time.sleep(1.0) # Pre-emptive wait
+        else:
+            base_url = MULTIMODAL_CONFIG.get("local_base_url", "http://localhost:11434/v1")
+            api_key = MULTIMODAL_CONFIG.get("local_api_key", "ollama")
+            model_name = MULTIMODAL_CONFIG.get("local_model")
+            print(f"   Using Local API: {model_name} (Batch Size: {BATCH_SIZE})")
+
+        # Initialize client
+        client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            http_client=httpx.Client(verify=False)
+        )
+
+        for i in range(0, len(crops), BATCH_SIZE):
+            batch = crops[i:i+BATCH_SIZE]
+            
+            # Rate limit pacing
+            if self.mode == "api" and i > 0:
+                print(f"   Sleeping 3s to cool down TPM...")
+                time.sleep(3.0) 
+
+            # Construct Batch Prompt
+            content_list = []
+            sys_msg = (
+                "You are an OCR engine. Identify text in the images below.\n"
+                "Return a strict JSON list: [{\"id\": \"<id>\", \"text\": \"<content>\"}, ...]\n"
+                "If formula, use LaTeX ($...$)."
+            )
+            content_list.append({"type": "text", "text": sys_msg})
+            
+            for item in batch:
+                if len(item) == 3: img_id, b64, hint = item
+                else: img_id, b64 = item; hint = ""
+                content_list.append({"type": "text", "text": f"\nImage ID: {img_id} (Hint: {hint})"})
+                content_list.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+            content_list.append({"type": "text", "text": "\nJSON List:"})
+
+            # Retry Loop
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "user", "content": content_list}],
+                        max_tokens=1024,
+                        temperature=0.01,
+                        response_format={"type": "json_object"}
+                    )
+                    content = response.choices[0].message.content.strip()
+                    # Cleanup markdown
+                    if content.startswith("```json"): content = content[7:]
+                    if content.endswith("```"): content = content[:-3]
+                    
+                    data = json.loads(content)
+                    if isinstance(data, dict) and "result" in data: data = data["result"] # common wrapper
+                    if isinstance(data, dict): data = list(data.values())[0] if data else [] # heuristic wrapper
+                    
+                    if not isinstance(data, list): raise ValueError("Format error")
+                    
+                    # Map results
+                    res_map = {str(x.get("id")): x.get("text","") for x in data}
+                    for item in batch:
+                         rid = str(item[0])
+                         txt = res_map.get(rid, "")
+                         is_f = "$" in txt or "\\" in txt
+                         results.append({"id": rid, "text": txt, "is_formula": is_f})
+                    break # Success
+
+                except Exception as e:
+                    if "429" in str(e) or "limit" in str(e).lower():
+                        wait = (2 ** attempt) * 4.0
+                        print(f"      Batch 429. Retry in {wait}s...")
+                        time.sleep(wait)
+                        if attempt == max_retries -1:
+                            # Fail batch
+                            for item in batch: results.append({"id": item[0], "text": "", "is_formula": False})
+                    else:
+                        print(f"      Batch Error: {e}")
+                        for item in batch: results.append({"id": item[0], "text": "", "is_formula": False})
+                        break
+        
+        return results
+
     def _recognize_crops_local(self, crops: list[tuple[str, str]]) -> list[dict]:
         """ 本地 Qwen 模型批量识别 (逐个处理以保证准确性) - 使用 Ollama 接口 """
         results = []
@@ -367,6 +474,124 @@ class MistralOCR:
         
         return latex_blocks
     
+    def analyze_image_end_to_end(self, image_path: str):
+        """
+        使用 VLM 直接进行端到端的文字检测和识别 (替换 Azure)
+        返回 OCRResult 对象
+        """
+        # Ensure imports
+        try:
+            from src.ocr_azure import OCRResult, TextBlock
+        except ImportError:
+            try:
+                from ocr_azure import OCRResult, TextBlock
+            except ImportError as e:
+                print(f"Error importing types: {e}")
+                return None
+
+        image_path = Path(image_path)
+        with Image.open(image_path) as img:
+            width, height = img.size
+            
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        suffix = image_path.suffix.lower()
+        mime_type = "image/jpeg"
+        if suffix == ".png": mime_type = "image/png"
+        elif suffix == ".webp": mime_type = "image/webp"
+
+        prompt = (
+            "Detect all text in this image. "
+            "Return a JSON object with a key 'text_blocks'. "
+            "Each item must have 'text' and 'bbox' [ymin, xmin, ymax, xmax] (normalized 0-1000). "
+            "Do not use markdown code blocks."
+        )
+
+        # Determine configuration based on mode
+        mode = MULTIMODAL_CONFIG.get("mode", "local")
+        if mode == "api":
+            base_url = MULTIMODAL_CONFIG.get("base_url")
+            api_key = MULTIMODAL_CONFIG.get("api_key")
+            model_name = MULTIMODAL_CONFIG.get("model")
+            print(f"Sending End-to-End VLM OCR request (API Mode, Model: {model_name})...")
+        else:
+            base_url = MULTIMODAL_CONFIG.get("local_base_url", "http://localhost:11434/v1")
+            api_key = MULTIMODAL_CONFIG.get("local_api_key", "ollama")
+            model_name = MULTIMODAL_CONFIG.get("local_model")
+            print(f"Sending End-to-End VLM OCR request (Local Mode, Model: {model_name})...")
+        
+        client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            http_client=httpx.Client(verify=False)
+        )
+        
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_base64}",
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=2048,
+                temperature=0.01,
+                response_format={"type": "json_object"}
+            )
+            
+            content = response.choices[0].message.content
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            data = json.loads(content)
+            blocks_data = data.get("text_blocks", [])
+            
+            final_blocks = []
+            for item in blocks_data:
+                txt = item.get("text", "")
+                bbox = item.get("bbox", [0,0,0,0])
+                if len(bbox) == 4:
+                    ymin, xmin, ymax, xmax = bbox
+                    # Clamp
+                    ymin = max(0, min(1000, ymin))
+                    xmin = max(0, min(1000, xmin))
+                    ymax = max(0, min(1000, ymax))
+                    xmax = max(0, min(1000, xmax))
+                    
+                    x1 = (xmin / 1000.0) * width
+                    y1 = (ymin / 1000.0) * height
+                    x2 = (xmax / 1000.0) * width
+                    y2 = (ymax / 1000.0) * height
+                    
+                    # 8-point polygon: TL, TR, BR, BL
+                    polygon = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+                    
+                    # Calculate font size from height
+                    font_height = abs(y2 - y1)
+                    if font_height < 1: font_height = 10.0 # fallback
+                    
+                    final_blocks.append(TextBlock(
+                        text=txt, polygon=polygon, confidence=1.0, 
+                        font_size_px=font_height, font_style=None
+                    ))
+            
+            print(f"VLM Detected {len(final_blocks)} text blocks.")
+            return OCRResult(image_width=width, image_height=height, text_blocks=final_blocks)
+
+        except Exception as e:
+            print(f"End-to-End VLM OCR failed: {e}")
+            return OCRResult(image_width=width, image_height=height, text_blocks=[])
+
     def verify_text(self, azure_text: str, image_path: str) -> tuple[str, bool]:
         """
         使用 Mistral 校验 Azure OCR 的识别结果

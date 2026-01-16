@@ -5,12 +5,16 @@ import yaml
 from pathlib import Path
 from openai import OpenAI
 import httpx
+import urllib3
+
+# 屏蔽 InsecureRequestWarning 警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # -------------------------- 全局配置与常量 --------------------------
 # SAM3初始提示词（用于过滤重复，避免返回无效提示词）
 SAM3_INITIAL_PROMPTS = [
     "icon", "picture", "rectangle", "section_panel",
-    "text_bubble", "title_bar", "arrow", "rounded rectangle"
+    "title_bar", "arrow", "rounded rectangle"
 ]
 
 # -------------------------- 配置加载函数 --------------------------
@@ -242,11 +246,15 @@ Output JSON Format:
         if "picture_prompts" not in cleaned_json: cleaned_json["picture_prompts"] = []
         if "has_missing" not in cleaned_json: cleaned_json["has_missing"] = False
         
+        # 显式标记成功
+        cleaned_json["error"] = False
+        
         return cleaned_json
 
     except Exception as e:
         print(f"API调用失败: {e}")
-        return {"icon_prompts": [], "picture_prompts": [], "has_missing": False}
+        # 显式标记失败
+        return {"icon_prompts": [], "picture_prompts": [], "has_missing": False, "error": True}
 
 # -------------------------- 独立测试入口 --------------------------
 if __name__ == "__main__":

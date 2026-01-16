@@ -37,21 +37,6 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 SAM3_CONFIG = CONFIG["sam3"]
 OUTPUT_CONFIG = CONFIG["paths"]
 
-# 取色配置（优先从yaml读取，无则兜底默认值）
-# Note: Legacy configuration, might be unused now but kept for compatibility if needed elsewhere
-try:
-    DOMINANT_COLOR_CONFIG = CONFIG["dominant_color"]
-except KeyError:
-    DOMINANT_COLOR_CONFIG = {
-        "border_width": 5,
-        "kmeans_cluster_num": 3,
-        "min_pixel_count": 50,
-        "saturation_threshold": 25,
-        "brightness_min": 12,
-        "brightness_max": 240,
-        "stroke_brightness_ratio": 0.85
-    }
-
 # RMBG-2.0 模型路径（自动推导相对路径）
 RMBG_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "rmbg", "model.onnx")
 
@@ -64,8 +49,7 @@ DRAWIO_STYLES = {
     "picture": "shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;",
     "rectangle": "rounded=0;whiteSpace=wrap;html=1;",
     "rounded rectangle": "rounded=1;whiteSpace=wrap;html=1;",
-    "text_bubble": "shape=callout;whiteSpace=wrap;html=1;perimeter=calloutPerimeter;size=30;position=0.5;base=20;",
-    "chat_bubble_rect": "shape=comment;whiteSpace=wrap;html=1;perimeter=commentPerimeter;", # 备用：方形气泡
+    #"chat_bubble_rect": "shape=comment;whiteSpace=wrap;html=1;perimeter=commentPerimeter;", # 备用：方形气泡
     "title_bar": "rounded=0;whiteSpace=wrap;html=1;fillColor=#E6E6E6;", # 默认灰底
     "section_panel": "rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=1 1;", # 默认虚线
     "arrow": "endArrow=classic;strokeWidth=2;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0.5;exitX=0.5;exitY=0.5;", # 增加连接点
@@ -82,7 +66,7 @@ DRAWIO_STYLES = {
 
 # 矢量化支持的Prompt列表 (不在列表中的将被视为图片处理)
 VECTOR_SUPPORTED_PROMPTS = [
-    "rectangle", "rounded rectangle", "text_bubble", "title_bar", "section_panel", 
+    "rectangle", "rounded rectangle", "title_bar", "section_panel", 
     "diamond", "ellipse", "cylinder", "cloud", "actor", "hexagon", "triangle", "parallelogram"
 ]
 
@@ -320,7 +304,7 @@ def build_drawio_xml(canvas_width: int, canvas_height: int, elements_data: dict)
 
     # 1. 收集所有 【普通形状】
     shape_elements = []
-    normal_types = ["rectangle", "section_panel", "text_bubble", "title_bar", "rounded rectangle"]
+    normal_types = ["rectangle", "section_panel", "title_bar", "rounded rectangle"]
     for t in normal_types:
         if t in elements_data:
             for item in elements_data[t]:
@@ -348,7 +332,7 @@ def build_drawio_xml(canvas_width: int, canvas_height: int, elements_data: dict)
     pic_keys = {"icon", "picture"}
     # 扩展：VECTOR_SUPPORTED_PROMPTS 里的都算 shape
     VECTOR_SUPPORTED_PROMPTS = {
-        "rectangle", "rounded rectangle", "section_panel", "text_bubble", "title_bar",
+        "rectangle", "rounded rectangle", "section_panel", "title_bar",
         "diamond", "ellipse", "cylinder", "cloud", "hexagon", "triangle", "parallelogram"
     }
     
@@ -900,21 +884,26 @@ class Sam3ElementExtractor:
         cv2.imwrite(output_path, result)
         return output_path
 
-    def iterative_extract(self, image_path: str) -> dict:
+    def iterative_extract(self, image_path: str, specific_output_dir: str = None) -> dict:
         """
         循环迭代提取优化版 (Fixed 4-Round Strategy):
         Round 1: Initial generic prompts.
         Round 2: Single-word specific prompts.
         Round 3: Two-word specific prompts.
         Round 4: Short phrases.
+        :param specific_output_dir: 指定输出目录（用于Server隔离任务），如果不传则使用默认的 output/temp/<filename>
         """
-        temp_dir = os.path.join(OUTPUT_CONFIG["temp_dir"], Path(image_path).stem)
+        if specific_output_dir:
+            temp_dir = specific_output_dir
+        else:
+            temp_dir = os.path.join(OUTPUT_CONFIG["temp_dir"], Path(image_path).stem)
+            
         os.makedirs(temp_dir, exist_ok=True)
         self.vis_dir = Path(temp_dir) 
 
         # Round 1: Initial Extraction
         print(f"--- [Round 1] Initial Extraction ---")
-        current_prompts = list(SAM3_CONFIG.get("initial_prompts", ["rectangle", "icon", "text_bubble", "arrow"]))
+        current_prompts = list(SAM3_CONFIG.get("initial_prompts", ["rectangle", "icon", "arrow"]))
         known_prompts = set(current_prompts)
         
         # Reset known picture prompts for new image
@@ -945,6 +934,12 @@ class Sam3ElementExtractor:
                 original_image_path=image_path
             )
             
+            # --- 错误检测逻辑 ---
+            if vlm_response.get("error", False):
+                print(f"⚠️ Warning: Round {round_idx} VLM call failed (see logs above). Stopping iterative scan.")
+                break
+            # --------------------
+
             icon_prompts = vlm_response.get("icon_prompts", [])
             picture_prompts = vlm_response.get("picture_prompts", [])
             has_missing = vlm_response.get("has_missing", False)

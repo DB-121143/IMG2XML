@@ -182,17 +182,12 @@ def process_image_background(task_id: str, image_path: str, output_dir: str, fil
             # 保护 GPU 推理过程，防止多任务并发导致 OOM
             with GLOBAL_LOCK:
                 print(f"[{task_id}] Acquired Global SAM3 Lock. Starting inference...")
-                extractor.iterative_extract(img_path)
+                # 关键修改：传入 task_dir 作为输出目录，避免 output/temp/original 冲突
+                extractor.iterative_extract(img_path, specific_output_dir=output_dir)
                 print(f"[{task_id}] Global SAM3 Inference finished. Lock released.")
             
-            # 构造返回路径 (与 sam3_extractor.py 逻辑保持一致)
-            # 这里的 CONFIG["sam3"] 可能无法直接访问 path，需小心
-            # 我们假设 extractor 内部使用了正确的 CONFIG
-            # 从 scripts.sam3_extractor 导入 output config logic 会更稳健，但这里我们根据已知逻辑构建
-            # sam3_extractor.py 中: temp_dir = os.path.join(OUTPUT_CONFIG["temp_dir"], ...)
-            # 我们可以直接重新计算路径
-            temp_dir = os.path.join(BASE_DIR, "output", "temp", Path(img_path).stem)
-            return os.path.join(temp_dir, "sam3_output.drawio.xml")
+            # 结果现在直接位于 task_dir (即 output_dir)
+            return os.path.join(output_dir, "sam3_output.drawio.xml")
 
         # 使用线程池并行运行
         # 注意：如果显存有限，同时运行两个大模型可能会导致 OOM。
