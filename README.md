@@ -33,7 +33,7 @@
 |----------|------------------------------|--------------------------------|
 | 场景1：基础流程图 | <img src="/static/demo/original_1.jpg" width="400" alt="原始图表1" style="border: 1px solid #eee; border-radius: 4px;"/> | <img src="/static/demo/recon_1.png" width="400" alt="重建结果1" style="border: 1px solid #eee; border-radius: 4px;"/> |
 | 场景2：多层级架构图 | <img src="/static/demo/original_2.png" width="400" alt="原始图表2" style="border: 1px solid #eee; border-radius: 4px;"/> | <img src="/static/demo/recon_2.png" width="400" alt="重建结果2" style="border: 1px solid #eee; border-radius: 4px;"/> |
-| 场景3：复杂技术示意图 | <img src="/static/demo/original_3.jpg" width="400" alt="原始图表3" style="border: 1px solid #eee; border-radius: 4px;"/> | <img src="/static/demo/recon_3.png" width="400" alt="重建结果3" style="border: 1px solid #eee; border-radius: 4px;"/> |
+| 场景3：技术示意图 | <img src="/static/demo/original_3.jpg" width="400" alt="原始图表3" style="border: 1px solid #eee; border-radius: 4px;"/> | <img src="/static/demo/recon_3.png" width="400" alt="重建结果3" style="border: 1px solid #eee; border-radius: 4px;"/> |
 
 > ✨ 转换亮点说明：
 > 1.  保留原图表的布局逻辑、颜色搭配与元素层级关系
