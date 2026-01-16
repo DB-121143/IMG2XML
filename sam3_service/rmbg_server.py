@@ -34,6 +34,11 @@ class RMBGInference:
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
         self.input_size = (1024, 1024)
+        # Log actual provider selection and CUDA visibility
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+        print(
+            f"[RMBG] visible={visible} available={available} selected={self.session.get_providers()} model={model_path}"
+        )
 
     def _preprocess(self, img: np.ndarray):
         h, w = img.shape[:2]
@@ -68,7 +73,8 @@ def create_app(model_path: str) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/remove", response_model=RMBGResponse)
-    async def remove_bg(payload: RMBGRequest) -> RMBGResponse:
+    def remove_bg(payload: RMBGRequest) -> RMBGResponse:
+        """Sync handler so FastAPI runs it in a threadpool, avoiding event-loop starvation."""
         try:
             img_bytes = base64.b64decode(payload.image)
             pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")

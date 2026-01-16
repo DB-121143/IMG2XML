@@ -105,6 +105,18 @@ class Sam3Runtime:
         )
         self.processor = Sam3Processor(self.model, device=device)
 
+        # Log actual runtime device info for visibility
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+        if torch.cuda.is_available():
+            current = torch.cuda.current_device()
+            name = torch.cuda.get_device_name(current)
+            capability = torch.cuda.get_device_capability(current)
+            print(
+                f"[SAM3] device={device} visible={visible} current_cuda={current} name={name} capability={capability}"
+            )
+        else:
+            print(f"[SAM3] device={device} visible={visible} (CUDA not available)")
+
         self.cache_size = cache_size
         self.state_cache: OrderedDict[str, Dict] = OrderedDict()
         self.cache_lock = asyncio.Lock()

@@ -88,9 +88,13 @@ services:
   rmbg_endpoints:
     - "http://127.0.0.1:9101"
     - "http://127.0.0.1:9102"
+    - "http://127.0.0.1:9103"
+    - "http://127.0.0.1:9104"
   # RMBG 服务对应的 GPU 绑定（与 rmbg_endpoints 顺序对应）。留空则按 onnxruntime 默认选择。
   rmbg_gpus:
-    - 3
+    - 0
+    - 1
+    - 2
     - 3
   # 可选：覆盖默认的 RMBG 模型路径
   rmbg_model_path: ""  # 为空则使用 models/rmbg/model.onnx

@@ -2,6 +2,7 @@ import os
 import io
 import base64
 import time
+import concurrent.futures
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -77,6 +78,8 @@ class Sam3ServiceElementExtractor:
             elements_data = existing_result["elements"]
             full_metadata = existing_result["full_metadata"]
 
+        rmbg_jobs = []  # (elem_ref, b64_input, log_label)
+
         for det in detections:
             prompt = det.get("prompt", "")
             score = float(det.get("score", 0))
@@ -111,10 +114,7 @@ class Sam3ServiceElementExtractor:
                 crop.save(buf, format="PNG")
                 buf.seek(0)
                 crop_b64 = base64.b64encode(buf.read()).decode("ascii")
-                t0 = time.time()
-                rgba_b64 = self.rmbg_pool.remove(crop_b64)
-                print(f"[RMBG] icon bbox={bbox} time={time.time()-t0:.3f}s")
-                elem["base64"] = rgba_b64
+                rmbg_jobs.append((elem, crop_b64, f"icon bbox={bbox}"))
             elif prompt == "picture":
                 crop = pil_image.crop((x1, y1, x2, y2))
                 elem["base64"] = image_to_base64(crop)
@@ -143,10 +143,9 @@ class Sam3ServiceElementExtractor:
                     input_pil = Image.fromarray(masked_np)
                 else:
                     input_pil = cropped_pil
-                t0 = time.time()
-                rgba_b64 = self.rmbg_pool.remove(image_to_base64(input_pil))
-                print(f"[RMBG] arrow bbox={bbox} padded={[p_x1,p_y1,p_x2,p_y2]} time={time.time()-t0:.3f}s")
-                elem["base64"] = rgba_b64
+                rmbg_jobs.append(
+                    (elem, image_to_base64(input_pil), f"arrow bbox={bbox} padded={[p_x1,p_y1,p_x2,p_y2]}")
+                )
                 elem["bbox"] = [p_x1, p_y1, p_x2, p_y2]
                 elem["area"] = (p_x2 - p_x1) * (p_y2 - p_y1)
 
@@ -155,6 +154,35 @@ class Sam3ServiceElementExtractor:
             elements_data[prompt].append(elem)
             full_metadata["total_elements"] += 1
             full_metadata["total_area"] += elem["area"]
+
+        # 并行执行 RMBG 调用（限制线程数不超过端点数，避免单一端口排队过长）
+        if rmbg_jobs:
+            max_per_image = max(1, len(getattr(self.rmbg_pool, "clients", [])))
+            max_workers = min(max_per_image, len(rmbg_jobs))
+
+            def _run_rmbg(b64_input: str, submitted_at: float):
+                start = time.time()
+                out = self.rmbg_pool.remove(b64_input)
+                end = time.time()
+                queue_elapsed = start - submitted_at
+                exec_elapsed = end - start
+                return out, queue_elapsed, exec_elapsed
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+                future_map = {}
+                for elem_ref, b64_input, log_label in rmbg_jobs:
+                    submitted_at = time.time()
+                    fut = ex.submit(_run_rmbg, b64_input, submitted_at)
+                    future_map[fut] = (elem_ref, log_label, submitted_at)
+
+                for fut in concurrent.futures.as_completed(future_map):
+                    elem_ref, log_label, submitted_at = future_map[fut]
+                    rgba_b64, queue_elapsed, exec_elapsed = fut.result()
+                    total_elapsed = time.time() - submitted_at
+                    elem_ref["base64"] = rgba_b64
+                    print(
+                        f"[RMBG] {log_label} queue={queue_elapsed:.3f}s exec={exec_elapsed:.3f}s total={total_elapsed:.3f}s"
+                    )
 
         # 去重
         if full_metadata["total_elements"] > 0:
