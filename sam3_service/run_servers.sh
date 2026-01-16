@@ -10,7 +10,7 @@ HOST=${HOST:-0.0.0.0}
 # Device: cuda | cpu
 DEVICE=${DEVICE:-cuda}
 # Image embedding cache size per server
-CACHE_SIZE=${CACHE_SIZE:-2}
+CACHE_SIZE=${CACHE_SIZE:-0}
 # Path to config.yaml
 CONFIG=${CONFIG:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/config.yaml"}
 # Log directory

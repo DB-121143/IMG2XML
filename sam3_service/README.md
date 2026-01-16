@@ -2,20 +2,14 @@
 
 A lightweight HTTP wrapper that keeps a SAM3 model resident in memory and serves requests via FastAPI. The model is loaded once per server process, and requests are processed serially within a process to avoid VRAM spikes. Run multiple processes for concurrency and load balancing.
 
-## Install dependencies
-
-```bash
-pip install -r sam3_service/requirements.txt
-```
-
 ## Start a server
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m sam3_service.server \
-  --host 0.0.0.0 --port 8001 \
-  --config config/config.yaml \
-  --device cuda \
-  --cache-size 2
+bash sam3_service/run_servers.sh
+bash sam3_service/run_rmbg_servers.sh
+
+curl -s http://127.0.0.1:9001/health
+python -m sam3_service.run_all_service --workers 2
 ```
 
 Notes:
