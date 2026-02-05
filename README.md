@@ -223,7 +223,7 @@ Feature Suggestions: [Discussions](https://github.com/XiangjianYi/Image2DrawIO/d
 Welcome to join our WeChat group to discuss and exchange ideas! Scan the QR code below to join:
 
 <p align="center">
-  <img src="/static/wechat_pr.png" width="200" alt="WeChat Group QR Code"/>
+  <img src="/static/wechat_pr.jpg" width="200" alt="WeChat Group QR Code"/>
   <br/>
   <em>Scan to join the Edit Banana community</em>
 </p>
